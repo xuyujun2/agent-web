@@ -1,0 +1,39 @@
+html, body, div, span, applet, object, iframe, hr,
+h1, h2, h3, h4, h5, h6, p, blockquote, abbr, 
+acronym, address, cite, code, del, dfn, em, img, 
+ins,strike, strong, dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend, object{margin:0; padding:0; border:0; background:transparent; zoom:1;}
+input, button {margin:0; padding:0;}
+body,input{color:#333; font-family:"Lantinghei SC", "Open Sans", Arial, "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", "STHeiti", "WenQuanYi Micro Hei", SimSun, sans-serif;}
+h1, h2, h3, h4, h5, h6, p, ul, ol, dl {font-weight:normal; font-family:"Lantinghei SC", "Open Sans", Arial, "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", "STHeiti", "WenQuanYi Micro Hei", SimSun, sans-serif;}
+ol, ul, li{list-style:none;}
+select,input[type="submit"] {cursor:pointer;}
+hr{height:0;margin:0 0.15rem;border:none;border-top:1px solid #eaeaea;border-bottom:1px solid #fafafa;}
+em,i{font-style:normal;}
+input[type="button"],input[type="submit"],input[type="reset"]{-webkit-appearance:none;-moz-appearance:none;-ms-appearance:none;appearance:none;-webkit-tap-highlight-color:rgba(0,0,0,0.2);-moz-tap-highlight-color:rgba(0,0,0,0.2);-ms-tap-highlight-color:rgba(0,0,0,0.2);tap-highlight-color:rgba(0,0,0,0.2)}
+.hide{display:none!important}
+/* img{vertical-align:middle;} */
+img{vertical-align: top;}
+*{box-sizing: border-box;font-family:"Microsoft YaHei", "微软雅黑";border:0;margin:0;padding:0;font-weight:normal;font-style:normal;text-decoration:none;word-break:break-all;word-wrap:break-word;list-style:none;outline:none;-webkit-tap-highlight-color: transparent;-moz-tap-highlight-color: transparent;-ms-tap-highlight-color: transparent;tap-highlight-color: transparent;}
+
+a {
+-webkit-tap-highlight-color: transparent;
+-moz-tap-highlight-color: transparent;
+-ms-tap-highlight-color: transparent;
+tap-highlight-color: transparent;
+-webkit-touch-callout: none;
+-moz-touch-callout: none;
+-ms-touch-callout: none;
+touch-callout: none;
+-webkit-user-select: none;
+-moz-user-select: none;
+-ms-user-select: none;
+user-select: none;
+text-decoration: none;}
+
+
+html,body {
+    overscroll-behavior: none; /* 阻止页面整体弹性滚动 */
+    height: 100%;
+    padding: 0 !important;
+}
