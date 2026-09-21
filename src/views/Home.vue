@@ -27,8 +27,10 @@
       </div>
       <form class="composer" @submit.prevent="sendQuestion()">
         <input v-model="question" :disabled="isSending || isLoadingHistory" maxlength="500" placeholder="请输入您的问题…" aria-label="请输入您的问题" />
+        <button class="voice-button" type="button" :class="{ recording: isRecording }" :disabled="isSending || isLoadingHistory" @pointerdown.prevent="startRecording" @pointerup.prevent="stopRecording" @pointercancel="stopRecording" @pointerleave="stopRecording">{{ isRecording ? '松开结束' : '按住说话' }}</button>
         <button type="submit" :disabled="isSending || isLoadingHistory || !question.trim()">{{ isLoadingHistory ? '加载中' : isSending ? '发送中' : '发送' }}</button>
       </form>
+      <p v-if="voiceTip" class="voice-tip">{{ voiceTip }}</p>
     </section>
 
     <div v-if="showUserModal" class="modal-mask" @click.self="showUserModal = false">
@@ -70,7 +72,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
 
-const SERVICE_URL = 'http://101.200.32.195:8000';
+// const SERVICE_URL = 'http://101.200.32.195:8000';
+const SERVICE_URL = 'http://localhost:8000';
 const AVAILABLE_USER_IDS = ['user_001', 'user_002', 'user_003'];
 
 type Message = {
@@ -80,7 +83,7 @@ type Message = {
   pending?: boolean;
 };
 type OrderState = 'unpaid' | 'paid' | 'shipped' | 'delivered';
-type SseEvent = { type: 'start' | 'content' | 'done' | 'error'; content?: string };
+type SseEvent = { type: 'start' | 'recognizing' | 'user_text' | 'content' | 'done' | 'error'; content?: string };
 type HistoryItem = { role: 'human' | 'ai'; content: string };
 
 function createWelcomeMessage(): Message {
@@ -91,6 +94,8 @@ const userId = ref(AVAILABLE_USER_IDS[0]);
 const messages = ref<Message[]>([createWelcomeMessage()]);
 const question = ref('');
 const isSending = ref(false);
+const isRecording = ref(false);
+const voiceTip = ref('');
 const isLoadingHistory = ref(false);
 const chatBody = ref<HTMLElement>();
 const showOrderModal = ref(false);
@@ -99,6 +104,20 @@ const orderNo = ref('');
 const orderState = ref<OrderState>('paid');
 const isUpdating = ref(false);
 const updateNotice = ref('');
+let mediaRecorder: MediaRecorder | null = null;
+let recordingStream: MediaStream | null = null;
+let audioChunks: Blob[] = [];
+let isVoicePressing = false;
+let recordingStartedAt = 0;
+let voiceTipTimer: number | undefined;
+
+function showVoiceTip(message: string) {
+  voiceTip.value = message;
+  window.clearTimeout(voiceTipTimer);
+  voiceTipTimer = window.setTimeout(() => {
+    voiceTip.value = '';
+  }, 3000);
+}
 
 const stateOptions: { value: OrderState; label: string; description: string }[] = [
   { value: 'unpaid', label: '未支付', description: '更新为待支付' },
@@ -165,10 +184,15 @@ async function sendQuestion(content = question.value) {
   scrollToBottom();
 
   try {
-    const response = await fetch(`${SERVICE_URL}/agent/ask/stream`, {
+    const formData = new FormData();
+    formData.append('input_type', 'text');
+    formData.append('user_id', userId.value);
+    formData.append('text', text);
+
+    const response = await fetch(`${SERVICE_URL}/agent/chat/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify({ user_id: userId.value, question: text }),
+      headers: { Accept: 'text/event-stream' },
+      body: formData,
     });
 
     if (!response.ok || !response.body) {
@@ -235,6 +259,155 @@ async function sendQuestion(content = question.value) {
   }
 }
 
+async function startRecording() {
+  isVoicePressing = true;
+  if (isSending.value || isRecording.value || !navigator.mediaDevices?.getUserMedia) return;
+
+  try {
+    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // 根本没开始录音，解决 首次授权麦克风时用户已松开按钮 会报错的情况
+    if (!isVoicePressing) {
+      recordingStream.getTracks().forEach((track) => track.stop());
+      recordingStream = null;
+      showVoiceTip('未识别到有效语音，请再试。');
+      return;
+    }
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+    mediaRecorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) audioChunks.push(event.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      const audioType = mediaRecorder?.mimeType || 'audio/webm';
+      const audioBlob = new Blob(audioChunks, { type: audioType });
+      recordingStream?.getTracks().forEach((track) => track.stop());
+      recordingStream = null;
+      mediaRecorder = null;
+      isRecording.value = false;
+
+      if (audioBlob.size < 1024 || Date.now() - recordingStartedAt < 1000) {
+        showVoiceTip('录音时间太短，请再试。');
+        return;
+      }
+
+      await sendVoice(audioBlob);
+    };
+
+    mediaRecorder.start();
+    recordingStartedAt = Date.now();
+    isRecording.value = true;
+  } catch {
+    showVoiceTip('无法使用麦克风，请确认已允许浏览器访问麦克风。');
+  }
+}
+
+function stopRecording() {
+  isVoicePressing = false;
+  if (mediaRecorder?.state === 'recording') mediaRecorder.stop();
+}
+
+async function sendVoice(audioBlob: Blob) {
+  isSending.value = true;
+  const voiceMessageId = Date.now();
+  const pendingId = voiceMessageId + 1;
+  messages.value.push({ id: voiceMessageId, role: 'user', content: '🎙️ 正在识别语音…', pending: true });
+  messages.value.push({ id: pendingId, role: 'assistant', content: '正在查询，请稍候…', pending: true });
+  scrollToBottom();
+
+  try {
+    const formData = new FormData();
+    formData.append('input_type', 'voice');
+    formData.append('user_id', userId.value);
+    formData.append('audio', audioBlob, 'voice.webm');
+
+    const response = await fetch(`${SERVICE_URL}/agent/chat/stream`, {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream' },
+      body: formData,
+    });
+    if (!response.ok || !response.body) {
+      const result = await response.json().catch(() => ({}));
+      throw new Error(result.detail || '客服服务暂时不可用');
+    }
+
+    const voiceMessage = messages.value.find((item) => item.id === voiceMessageId);
+    const answerMessage = messages.value.find((item) => item.id === pendingId);
+    if (!voiceMessage || !answerMessage) return;
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let streamError = '';
+    let isInvalidVoice = false;
+
+    const handleEvent = (rawEvent: string) => {
+      const dataLine = rawEvent.split(/\r?\n/).find((line) => line.startsWith('data:'));
+      if (!dataLine) return;
+
+      const event = JSON.parse(dataLine.slice(5).trim()) as SseEvent;
+      if (event.type === 'recognizing') voiceMessage.content = '🎙️ 正在识别语音…';
+      if (event.type === 'user_text') {
+        voiceMessage.content = event.content || '语音识别失败';
+        voiceMessage.pending = false;
+        scrollToBottom();
+      }
+      if (event.type === 'start') {
+        answerMessage.content = '';
+        answerMessage.pending = false;
+      }
+      if (event.type === 'content') {
+        answerMessage.content += event.content || '';
+        scrollToBottom();
+      }
+      if (event.type === 'error') {
+        if (event.content === '输入类型或内容不正确') {
+          isInvalidVoice = true;
+          showVoiceTip('语音识别失败，请重试。');
+        } else {
+          streamError = event.content || '客服服务暂时不可用';
+        }
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() || '';
+      events.forEach(handleEvent);
+      if (done) break;
+    }
+    if (buffer.trim()) handleEvent(buffer);
+    if (isInvalidVoice) {
+      messages.value = messages.value.filter((item) => item.id !== voiceMessageId && item.id !== pendingId);
+      return;
+    }
+    if (streamError) throw new Error(streamError);
+    if (voiceMessage.pending) voiceMessage.content = '语音识别失败，请重试。';
+    if (!answerMessage.content) answerMessage.content = '暂时没有查询到结果，请稍后再试。';
+    voiceMessage.pending = false;
+    answerMessage.pending = false;
+  } catch (error) {
+    const voiceMessage = messages.value.find((item) => item.id === voiceMessageId);
+    const answerMessage = messages.value.find((item) => item.id === pendingId);
+    if (voiceMessage?.pending) {
+      voiceMessage.content = '语音识别失败，请重试。';
+      voiceMessage.pending = false;
+    }
+    if (answerMessage) {
+      answerMessage.content = error instanceof Error ? `抱歉，${error.message}` : '抱歉，服务连接失败，请稍后重试。';
+      answerMessage.pending = false;
+    }
+  } finally {
+    isSending.value = false;
+    scrollToBottom();
+  }
+}
+
 async function updateOrderState() {
   const currentOrderNo = orderNo.value.trim();
   if (!currentOrderNo || isUpdating.value) {
@@ -280,6 +453,8 @@ h1 { font-size: 19px; font-weight: 700; } .chat-header p { margin-top: 3px; colo
 .message-bubble { max-width: min(78%, 550px); padding: 12px 15px; border-radius: 5px 16px 16px 16px; background: white; box-shadow: 0 3px 12px rgba(34,58,102,.07); white-space: pre-wrap; line-height: 1.6; font-size: 14px; }.user .message-bubble { border-radius: 16px 5px 16px 16px; background: #336af2; color: white; }.pending { color: #74809a; }
 .quick-questions { display: flex; gap: 9px; overflow-x: auto; padding: 13px 24px 3px; background: white; }.quick-questions button { flex: 0 0 auto; padding: 7px 11px; border: 1px solid #d7e1f5; border-radius: 99px; background: #f8faff; color: #3b5689; cursor: pointer; font-size: 12px; }
 .composer { display: flex; gap: 12px; padding: 14px 24px 22px; background: white; }.composer input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #d9e2f2; border-radius: 11px; font-size: 14px; }.composer button, .confirm-button { padding: 0 21px; border-radius: 11px; background: #3267ed; color: white; cursor: pointer; font-size: 14px; }.composer button:disabled, .confirm-button:disabled { opacity: .55; cursor: not-allowed; }
+.voice-button { flex: 0 0 auto; border: 1px solid #cbd8f3 !important; background: #eef3ff !important; color: #3267ed !important; white-space: nowrap; }.voice-button.recording { border-color: #efb4be !important; background: #fff0f2 !important; color: #d5495d !important; animation: voice-pulse 1s ease-in-out infinite; }@keyframes voice-pulse { 50% { opacity: .65; } }
+.voice-tip { margin: -10px 24px 12px; color: #d5495d; font-size: 12px; }
 .modal-mask { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(17,29,54,.45); }.modal { width: min(100%, 460px); padding: 26px; border-radius: 20px; background: white; box-shadow: 0 24px 70px rgba(13,25,53,.3); }.modal-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; }.eyebrow { margin-bottom: 5px; color: #71809d; font-size: 12px; }.modal h2 { font-size: 20px; font-weight: 700; }.close-button { width: 30px; height: 30px; border-radius: 50%; background: #f1f4fa; color: #53617b; cursor: pointer; font-size: 22px; }.order-label, .state-title { display: block; margin-bottom: 8px; color: #37445e; font-size: 13px; font-weight: 700; }.order-input { width: 100%; padding: 12px; border: 1px solid #d7e1f0; border-radius: 10px; font-size: 14px; }.state-title { margin-top: 22px; }.state-switches { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }.state-switch { min-height: 72px; padding: 8px 4px; border: 1px solid #dbe4f4; border-radius: 10px; background: #fff; color: #54627c; cursor: pointer; }.state-switch strong, .state-switch small { display: block; }.state-switch strong { margin-bottom: 5px; font-size: 13px; }.state-switch small { font-size: 11px; }.state-switch.active { border-color: #3267ed; background: #edf3ff; color: #285aca; }.update-notice { min-height: 20px; margin-top: 13px; color: #38845f; font-size: 13px; }.confirm-button { width: 100%; height: 44px; margin-top: 12px; }
 .user-modal { max-height: min(620px, calc(100vh - 40px)); display: flex; flex-direction: column; }.user-modal-tip, .empty-user-ids { margin-bottom: 14px; color: #66738d; font-size: 13px; line-height: 1.6; }.user-id-list { display: flex; max-height: 290px; flex-direction: column; gap: 8px; overflow-y: auto; }.user-id-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px; border: 1px solid #dbe4f4; border-radius: 10px; background: #fff; color: #3f4f6e; cursor: pointer; text-align: left; }.user-id-item span { overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.user-id-item small { flex: 0 0 auto; color: #7b879e; font-size: 11px; }.user-id-item.active { border-color: #3267ed; background: #edf3ff; color: #285aca; }.user-id-item.active small { color: #285aca; }.clear-button { display: flex; align-items: center; justify-content: center; width: 100%; height: 42px; margin-top: 18px; overflow: hidden; border: 1px solid #f1bdc5; border-radius: 10px; background: #fff8f8; color: #bc4759; cursor: pointer; font-size: 14px; line-height: 1; white-space: nowrap; }.clear-button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 560px) { .service-page { padding: 0; }.chat-card { width: 100%; height: 100vh; min-height: 0; border-radius: 0; }.chat-header, .chat-body, .composer, .quick-questions { padding-left: 16px; padding-right: 16px; }.order-control { padding: 8px; font-size: 12px; }.header-actions { gap: 5px; }.state-switches { gap: 6px; } }
