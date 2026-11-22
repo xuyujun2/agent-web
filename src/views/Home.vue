@@ -74,7 +74,7 @@ import { computed, nextTick, onMounted, ref } from 'vue';
 
 // const SERVICE_URL = 'http://101.200.32.195:8000';
 const SERVICE_URL = 'http://localhost:8000';
-const AVAILABLE_USER_IDS = ['user_001', 'user_002', 'user_003'];
+const AVAILABLE_USER_IDS = ['user_001', 'user_002', 'user_003','user_006', 'user_007',];
 
 type Message = {
   id: number;
